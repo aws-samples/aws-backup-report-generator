@@ -1,0 +1,48 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "This template will create the Lambda function and associated resources for Backup reporting"
+Parameters:
+  ReportingAccountID:
+    Description: The Account ID for the reporting account where the backup reports are to be generated.
+    Type: String
+Resources:
+  BackupReportIAMPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Policy for writing to CW Logs
+      ManagedPolicyName: "Backup-Report-Policy"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - backup:List*
+            Resource: "*"
+  BackupReportIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "Backup-Report-Role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Join
+                - ''
+                - - 'arn:aws:iam::'
+                  - !Ref 'ReportingAccountID'
+                  - ':root'
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      ManagedPolicyArns:
+        - Ref: BackupReportIAMPolicy
+  SSMBackupRole:
+    Properties:
+      Description: Backup Role
+      Name: BackupReportingRole
+      Type: String
+      Value:
+        Fn::GetAtt:
+          - BackupReportIAMRole
+          - Arn
+    Type: AWS::SSM::Parameter
