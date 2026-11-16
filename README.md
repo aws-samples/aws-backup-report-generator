@@ -65,6 +65,8 @@ If you delete and recreate the reporting stack, update the management stack afte
 
 To test, deploy the reporting stack with `ScheduleExpression` set to `rate(5 minutes)`. Reset it to the default when you finish.
 
+The report bucket also receives S3 server access logs under `access-logs/`. For production, send them to a separate log bucket.
+
 To remove the solution, empty the report bucket, then delete both stacks.
 
 ## Security

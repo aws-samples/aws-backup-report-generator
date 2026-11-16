@@ -60,14 +60,11 @@ Resources:
     # Sample-only exceptions, accepted on purpose:
     # - Object Lock is not enabled: it would block the clean-up steps in the pattern.
     # - AccessControl is not set: ACLs are disabled with BucketOwnerEnforced and public access is blocked.
-    # - Server access logging is not enabled: add a separate log bucket if you need it.
     Metadata:
       guard:
         SuppressedRules:
           - S3_BUCKET_DEFAULT_LOCK_ENABLED
-          - S3_BUCKET_LOGGING_ENABLED
           - S3_BUCKET_NO_PUBLIC_RW_ACL
-    # checkov:skip=CKV_AWS_18:Access logging needs a separate log bucket; out of scope for this sample.
     # checkov:skip=CKV2_AWS_62:Event notifications are not required for this sample.
     # checkov:skip=CKV_AWS_144:Cross-Region replication is not required for this sample.
     Properties:
@@ -95,6 +92,23 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      # Server access logs are written to this same bucket under access-logs/.
+      # The destination repeats the bucket name expression because a resource
+      # cannot reference itself. For production, use a separate log bucket.
+      LoggingConfiguration:
+        DestinationBucketName: !Join
+          - "-"
+          - - "backup-reports-bucket"
+            - !Select
+              - 0
+              - !Split
+                - "-"
+                - !Select
+                  - 2
+                  - !Split
+                    - "/"
+                    - !Ref "AWS::StackId"
+        LogFilePrefix: access-logs/
       VersioningConfiguration:
         Status: Enabled
 
@@ -105,6 +119,17 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
+          - Sid: AllowS3ServerAccessLogs
+            Effect: Allow
+            Principal:
+              Service: logging.s3.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${BackupReportS3Bucket.Arn}/access-logs/*'
+            Condition:
+              ArnLike:
+                aws:SourceArn: !GetAtt BackupReportS3Bucket.Arn
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
           - Sid: DenyInsecureTransport
             Effect: Deny
             Principal: '*'
