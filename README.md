@@ -7,6 +7,8 @@ This pattern depicts the usage of a custom solution to generate consolidated rep
 
 
 
+> **Note:** AWS Backup Audit Manager can create multi-account, multi-Region job reports as CSV files in an Amazon S3 bucket, from the management account or a delegated administrator account. See [Working with audit reports](https://docs.aws.amazon.com/aws-backup/latest/devguide/working-with-audit-reports.html). Use this sample if you need reports in a member account's bucket, split by job status, or on a custom schedule.
+
 ## **Prerequisites**
 
 -   An active AWS organization setup having a minimum of
@@ -56,8 +58,14 @@ The report generated are only for the resources for which backup is enabled thro
 ## **Steps to Deploy**
 
 1. Clone this repository to local workstation
-2. Deploy template-management.yml to the management account of the AWS Organization
-3. Deploy template-reporting.yml to the reporting account where you want the reports to be generated.
+2. Deploy template-reporting.yml to the reporting account where you want the reports to be generated. Enter the management account ID for `ManagementAccountID`. Deploy this template first, because the management account role trusts the Lambda role that this template creates. Because the templates use named IAM resources, acknowledge `CAPABILITY_NAMED_IAM`.
+3. Deploy template-management.yml to the management account of the AWS Organization. Enter the reporting account ID for `ReportingAccountID` and your organization ID (for example, `o-a1b2c3d4e5`) for `OrganizationID`.
+
+If you delete and recreate the reporting stack, update the management stack afterward (for example, redeploy it). The trust policy refers to the Lambda role's unique ID, which changes when the role is recreated.
+
+To test, deploy the reporting stack with `ScheduleExpression` set to `rate(5 minutes)`. Reset it to the default when you finish.
+
+To remove the solution, empty the report bucket, then delete both stacks.
 
 ## Security
 

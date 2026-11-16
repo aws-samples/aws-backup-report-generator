@@ -1,48 +1,55 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "This template will create the Lambda function and associated resources for Backup reporting"
+Description: "Management account resources for the AWS Backup report generator: a role that the reporting account's Lambda function assumes to list AWS Backup jobs. Deploy template-reporting.yml in the reporting account first."
 Parameters:
   ReportingAccountID:
-    Description: The Account ID for the reporting account where the backup reports are to be generated.
+    Description: The 12-digit account ID of the reporting account where the backup reports are generated.
     Type: String
+    AllowedPattern: '^[0-9]{12}$'
+    ConstraintDescription: Must be a 12-digit AWS account ID.
+  OrganizationID:
+    Description: The ID of your organization in AWS Organizations (for example, o-a1b2c3d4e5). Only principals in this organization can assume the role.
+    Type: String
+    AllowedPattern: '^o-[a-z0-9]{10,32}$'
+    ConstraintDescription: Must be a valid AWS Organizations ID, such as o-a1b2c3d4e5.
 Resources:
   BackupReportIAMPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
-      Description: Policy for writing to CW Logs
+      Description: Allows listing AWS Backup jobs across the organization
       ManagedPolicyName: "Backup-Report-Policy"
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Action:
-              - backup:List*
+              - backup:ListBackupJobs
+            # ListBackupJobs does not support resource-level permissions.
             Resource: "*"
   BackupReportIAMRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: "Backup-Report-Role"
+      Description: Assumed by the reporting account Lambda function to list AWS Backup jobs
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
+            # Trust only the Lambda execution role in the reporting account,
+            # not the whole account. This role is created by template-reporting.yml.
             Principal:
-              AWS: !Join
-                - ''
-                - - 'arn:aws:iam::'
-                  - !Ref 'ReportingAccountID'
-                  - ':root'
+              AWS: !Sub 'arn:${AWS::Partition}:iam::${ReportingAccountID}:role/Backup-Report-Role'
             Action:
               - sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:PrincipalOrgID: !Ref OrganizationID
       Path: "/"
       ManagedPolicyArns:
-        - Ref: BackupReportIAMPolicy
+        - !Ref BackupReportIAMPolicy
   SSMBackupRole:
+    Type: AWS::SSM::Parameter
     Properties:
       Description: Backup Role
       Name: BackupReportingRole
       Type: String
-      Value:
-        Fn::GetAtt:
-          - BackupReportIAMRole
-          - Arn
-    Type: AWS::SSM::Parameter
+      Value: !GetAtt BackupReportIAMRole.Arn

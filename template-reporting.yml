@@ -1,14 +1,20 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "This template will create the Lambda function and associated resources for Backup reporting"
+Description: "Reporting account resources for the AWS Backup report generator: a scheduled Lambda function that writes AWS Backup job reports to Amazon S3. Deploy this template before template-management.yml."
 Parameters:
   ManagementAccountID:
-    Description: The Account ID for the management account of the AWS organization.
+    Description: The 12-digit account ID of the management account of the AWS organization.
     Type: String
+    AllowedPattern: '^[0-9]{12}$'
+    ConstraintDescription: Must be a 12-digit AWS account ID.
+  ScheduleExpression:
+    Description: EventBridge schedule for the report. The default runs once a day at 23:59 UTC. For testing, use rate(5 minutes).
+    Type: String
+    Default: "cron(59 23 * * ? *)"
 Resources:
   BackupAssumePolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
-      Description: Policy
+      Description: Allows the report function to assume the management account role and write reports to S3
       ManagedPolicyName: "Backup-Report-Policy"
       PolicyDocument:
         Version: '2012-10-17'
@@ -16,33 +22,16 @@ Resources:
           - Effect: Allow
             Action:
               - sts:AssumeRole
-            Resource: !Join
-              - ''
-              - - 'arn:aws:iam::'
-                - !Ref "ManagementAccountID"
-                - ':role/Backup-Report-Role'
+            Resource: !Sub 'arn:${AWS::Partition}:iam::${ManagementAccountID}:role/Backup-Report-Role'
           - Effect: Allow
             Action:
-              - s3:ListBucket
-              - s3:ListAllMyBuckets
-            Resource: !GetAtt BackupReportS3Bucket.Arn
-          - Effect: Allow
-            Action:
-              - s3:GetObject
-              - s3:GetObjectVersion
               - s3:PutObject
-              - s3:PutObjectAcl
-            Resource: !Join
-              - ''
-              - - !GetAtt BackupReportS3Bucket.Arn
-                - '/*'
-          - Action:
-              - logs:CreateLogGroup
+            Resource: !Sub '${BackupReportS3Bucket.Arn}/BackupReports/*'
+          - Effect: Allow
+            Action:
               - logs:CreateLogStream
               - logs:PutLogEvents
-            Resource:
-              - Fn::Sub: arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*
-            Effect: Allow
+            Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/Backup-ReportsGenerator-Function:*'
 
   BackupReportIAMRole:
     Type: AWS::IAM::Role
@@ -59,12 +48,25 @@ Resources:
               - sts:AssumeRole
       Path: "/"
       ManagedPolicyArns:
-        - Ref: BackupAssumePolicy
+        - !Ref BackupAssumePolicy
 
   BackupReportS3Bucket:
     Type: "AWS::S3::Bucket"
     DeletionPolicy: Delete
     UpdateReplacePolicy: Retain
+    # Sample-only exceptions, accepted on purpose:
+    # - Object Lock is not enabled: it would block the clean-up steps in the pattern.
+    # - AccessControl is not set: ACLs are disabled with BucketOwnerEnforced and public access is blocked.
+    # - Server access logging is not enabled: add a separate log bucket if you need it.
+    Metadata:
+      guard:
+        SuppressedRules:
+          - S3_BUCKET_DEFAULT_LOCK_ENABLED
+          - S3_BUCKET_LOGGING_ENABLED
+          - S3_BUCKET_NO_PUBLIC_RW_ACL
+    # checkov:skip=CKV_AWS_18:Access logging needs a separate log bucket; out of scope for this sample.
+    # checkov:skip=CKV2_AWS_62:Event notifications are not required for this sample.
+    # checkov:skip=CKV_AWS_144:Cross-Region replication is not required for this sample.
     Properties:
       BucketName: !Join
         - "-"
@@ -82,39 +84,58 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
-      LoggingConfiguration:
-        LogFilePrefix: testing-logs
       VersioningConfiguration:
         Status: Enabled
+
+  BackupReportS3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref BackupReportS3Bucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt BackupReportS3Bucket.Arn
+              - !Sub '${BackupReportS3Bucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
 
   LambdaSchedule:
     Type: "AWS::Events::Rule"
     Properties:
       Description: >
-        A schedule for the Report Generation Lambda function..
-      #ScheduleExpression: "cron(59 23 * * ? *)"
-      ScheduleExpression: "cron(*/5 * * * ? *)"
+        A schedule for the Report Generation Lambda function.
+      ScheduleExpression: !Ref ScheduleExpression
       State: ENABLED
       Targets:
-        - Arn: !Sub ${BackupReportingFunction.Arn}
+        - Arn: !GetAtt BackupReportingFunction.Arn
           Id: LambdaSchedule
 
   LambdaSchedulePermission:
     Type: "AWS::Lambda::Permission"
     Properties:
       Action: 'lambda:InvokeFunction'
-      FunctionName: !Sub ${BackupReportingFunction.Arn}
+      FunctionName: !GetAtt BackupReportingFunction.Arn
       Principal: 'events.amazonaws.com'
-      SourceArn: !Sub ${LambdaSchedule.Arn}
+      SourceArn: !GetAtt LambdaSchedule.Arn
 
   CloudWatchKMS:
     Type: AWS::KMS::Key
     Properties:
+      Description: Encrypts the CloudWatch Logs log group of the backup report function
       Enabled: true
       EnableKeyRotation: true
       KeyPolicy:
@@ -137,6 +158,9 @@ Resources:
               - kms:GenerateDataKey*
               - kms:Describe*
             Resource: '*'
+            Condition:
+              ArnEquals:
+                kms:EncryptionContext:aws:logs:arn: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/Backup-ReportsGenerator-Function
 
   LogGroup:
     Type: AWS::Logs::LogGroup
@@ -147,11 +171,19 @@ Resources:
 
   BackupReportingFunction:
     Type: AWS::Lambda::Function
+    # Sample-only exceptions, accepted on purpose:
+    # - No VPC: the function only calls AWS public endpoints; a VPC would add NAT cost for no benefit.
+    # - No DLQ: the function runs on a schedule and the next run regenerates the report.
+    Metadata:
+      guard:
+        SuppressedRules:
+          - LAMBDA_INSIDE_VPC
+          - LAMBDA_DLQ_CHECK
     # checkov:skip=CKV_AWS_117:VPC not required for Sample function
     # checkov:skip=CKV_AWS_116:No DLQ requirement for the solution
     # checkov:skip=CKV_AWS_173: Environment variables doesn't contain sensitive information.
     Properties:
-      FunctionName: 'R-CSSP-Backup-ReportsGenerator-Function'
+      FunctionName: 'Backup-ReportsGenerator-Function'
       Environment:
         Variables:
           backup_bucket_name: !Ref 'BackupReportS3Bucket'
@@ -161,81 +193,58 @@ Resources:
         ZipFile: |-
           import os
           import io
-          import boto3
-          import json
           import csv
-          from datetime import *
-          
-          dateobj = datetime.now(timezone.utc)
-          date_before = (dateobj.strftime('%Y') + ', ' + dateobj.strftime('%m') + ', ' + (str(int(dateobj.strftime('%d')) + 1)))
-          date_after = (dateobj.strftime('%Y') + ', ' + dateobj.strftime('%m') + ', ' + dateobj.strftime('%d'))
+          import json
+          from datetime import datetime, timedelta, timezone
+
+          import boto3
+
           bucket_name = os.getenv('backup_bucket_name')
           bkp_region = os.getenv('backup_region')
-          
-          
-          def report_generator(backup_state, dateobj, date_before, date_after, bucket_name, backup_client, s3_client):
-            csvFile = "BackupReport-" + backup_state + "-%s.csv" % (dateobj.strftime('%d-%b-%Y'))
-            response = backup_client.list_backup_jobs(
-            #NextToken='string',
-            #MaxResults=12000,
-            #ByResourceArn='string',
-            ByState=backup_state,
-            #ByBackupVaultName='string',
-            ByCreatedBefore=date_before,
-            ByCreatedAfter=date_after,
-            #ByResourceType='string',
-            ByAccountId='*'
-            #ByCompleteAfter=date_after,
-            #ByCompleteBefore=date_before
-            )
-            json_object = json.dumps(response, indent=4, sort_keys=True, default=str)
-            json_object = json.loads(json_object)
-            Backup_Jobs = json_object['BackupJobs']
-            if Backup_Jobs:
-              print("Records found for backup jobs having status \""+backup_state+"\". Generating Report.")
-              csvio = io.StringIO()
-              csv_writer = csv.writer(csvio)
-              count = 0
-              for bkp in Backup_Jobs:
-                if count == 0:
-                  header = bkp.keys()
-                  csv_writer.writerow(header)
-                  count += 1
-                csv_writer.writerow(bkp.values())
-          
-              print("Starting upload of " + csvFile)
-              upload_file_content_s3(csvio, bucket_name, csvFile, s3_client)
-              print(csvio.getvalue().count('\n'))
-              csvio.close()
-            else:
-              print("No records found for backup jobs having status \""+backup_state+"\"")
-          
-          def upload_file_content_s3(csvio, bucket_name, csvfile, s3_client_master):
-            #s3_client = boto3.client('s3')
-            object_name = (
-            'BackupReports/' + dateobj.strftime('%Y') + '/' + dateobj.strftime('%m') + '/' + dateobj.strftime(
-            '%d') + '/' + csvfile)
-            s3_client_master.put_object(Body=csvio.getvalue(), ContentType='application/vnd.ms-excel', Bucket=bucket_name, Key=object_name )
-            print("Successfully uploaded " + csvfile + " to the S3 bucket " + bucket_name + " at the location " + object_name)
-          
+
+
+          def report_generator(state, now, start, end, backup_client, s3_client):
+            csv_file = "BackupReport-" + state + "-%s.csv" % now.strftime('%d-%b-%Y')
+            # Page through all results; one call returns a limited number of jobs.
+            pages = backup_client.get_paginator('list_backup_jobs').paginate(
+              ByState=state, ByCreatedAfter=start, ByCreatedBefore=end, ByAccountId='*')
+            jobs = [job for page in pages for job in page['BackupJobs']]
+            if not jobs:
+              print("No records found for backup jobs having status \"" + state + "\"")
+              return
+            print("Records found for backup jobs having status \"" + state + "\". Generating Report.")
+            jobs = json.loads(json.dumps(jobs, default=str))
+            # Jobs can have different optional fields, so build the header from all of them.
+            header = list(dict.fromkeys(key for job in jobs for key in job))
+            csvio = io.StringIO()
+            writer = csv.DictWriter(csvio, fieldnames=header)
+            writer.writeheader()
+            writer.writerows(jobs)
+            object_name = 'BackupReports/' + now.strftime('%Y/%m/%d/') + csv_file
+            s3_client.put_object(Body=csvio.getvalue(), ContentType='application/vnd.ms-excel', Bucket=bucket_name, Key=object_name)
+            print("Successfully uploaded " + csv_file + " to the S3 bucket " + bucket_name + " at the location " + object_name)
+
+
           def lambda_handler(event, context):
-            sts_client = boto3.client('sts')
-            acc_id = os.getenv('mgmt_acc_id')
-            arn = "arn:aws:iam::"+acc_id+":role/Backup-Report-Role"
-            response = sts_client.assume_role(RoleArn=arn, RoleSessionName="backup-report")
-            temp_credentials = response['Credentials']
+            # Compute the dates on every invocation, not at import time,
+            # because Lambda can reuse the execution environment across days.
+            now = datetime.now(timezone.utc)
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            end = start + timedelta(days=1)
+            arn = "arn:aws:iam::" + os.getenv('mgmt_acc_id') + ":role/Backup-Report-Role"
+            credentials = boto3.client('sts').assume_role(RoleArn=arn, RoleSessionName="backup-report")['Credentials']
             s3_client = boto3.client('s3')
-            backup_client = boto3.client('backup',region_name=bkp_region,
-            aws_access_key_id=temp_credentials['AccessKeyId'],
-            aws_secret_access_key=temp_credentials['SecretAccessKey'],
-            aws_session_token=temp_credentials['SessionToken'])
-            bkp_state = ["CREATED", "PENDING", "RUNNING", "ABORTING", "ABORTED", "COMPLETED", "FAILED", "EXPIRED"]
-            for state in bkp_state:
-              report_generator(state, dateobj, date_before, date_after, bucket_name,backup_client, s3_client)
+            backup_client = boto3.client('backup', region_name=bkp_region,
+              aws_access_key_id=credentials['AccessKeyId'],
+              aws_secret_access_key=credentials['SecretAccessKey'],
+              aws_session_token=credentials['SessionToken'])
+            states = ["CREATED", "PENDING", "RUNNING", "ABORTING", "ABORTED", "COMPLETED", "FAILED", "EXPIRED"]
+            for state in states:
+              report_generator(state, now, start, end, backup_client, s3_client)
 
       Description: Lambda Function to generate backup reports and upload to S3 bucket
       Handler: index.lambda_handler
       Role : !GetAtt BackupReportIAMRole.Arn
-      Runtime: python3.9
+      Runtime: python3.13
       Timeout: 300
-      ReservedConcurrentExecutions: 50
+      ReservedConcurrentExecutions: 1
