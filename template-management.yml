@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+
 AWSTemplateFormatVersion: "2010-09-09"
 Description: "Management account resources for the AWS Backup report generator: a role that the reporting account's Lambda function assumes to list AWS Backup jobs. Deploy template-reporting.yml in the reporting account first."
 Parameters:
