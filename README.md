@@ -9,6 +9,8 @@ This pattern depicts the usage of a custom solution to generate consolidated rep
 
 > **Note:** AWS Backup Audit Manager can create multi-account, multi-Region job reports as CSV files in an Amazon S3 bucket, from the management account or a delegated administrator account. See [Working with audit reports](https://docs.aws.amazon.com/aws-backup/latest/devguide/working-with-audit-reports.html). Use this sample if you need reports in a member account's bucket, split by job status, or on a custom schedule.
 
+> **Disclaimer:** This is sample code for non-production usage. Work with your security and legal teams to meet your organizational security, regulatory and compliance requirements before deployment. See [SECURITY.md](SECURITY.md) for the services used, permissions, accepted trade-offs and clean-up steps.
+
 ## **Prerequisites**
 
 -   An active AWS organization setup having a minimum of
@@ -19,6 +21,7 @@ This pattern depicts the usage of a custom solution to generate consolidated rep
 
 -   AWS IAM user/roles with the required access and permissions for deploying the solution in the above mentioned accounts.
 
+-   AWS Backup cross-account monitoring turned on in the management account (AWS Backup console, **Settings**, **Cross-account monitoring**, **Enable**). Without it, listing jobs for all accounts fails with `AccessDeniedException`.
 -   AWS Backup service already configured at organization level. (Refer this documentation for detailed implementation guide for [Centralised Backup solution](https://aws.amazon.com/blogs/storage/automate-centralized-backup-at-scale-across-aws-services-using-aws-backup/))
 
 ## **Limitations**
